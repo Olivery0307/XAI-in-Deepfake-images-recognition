@@ -1,0 +1,9 @@
+streamlit
+torch
+torchvision
+timm
+opencv-python-headless
+numpy
+Pillow
+google-generativeai
+grad-cam
