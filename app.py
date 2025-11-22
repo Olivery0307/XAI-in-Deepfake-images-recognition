@@ -1,16 +1,23 @@
+"""
+Deepfake Forensic Detective - Streamlit App
+Enhanced with modular architecture support for ResNet, EfficientNet, and ViT
+"""
+
 import streamlit as st
 import torch
-import timm
-import cv2
 import numpy as np
 from PIL import Image
-import google.generativeai as genai
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.image import show_cam_on_image, preprocess_image
 import os
+import sys
+
+# Import modular components
+from src.models import get_model, load_checkpoint
+from src.preprocessing import process_uploaded_image
+from src.xai_utils import compute_gradcam, get_gemini_explanation
+from configs.config import Config
 
 # ==========================================
-# 1. Configuration & Constants
+# 1. Page Configuration
 # ==========================================
 st.set_page_config(
     page_title="Deepfake Forensic Detective",
@@ -19,17 +26,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS for Visual Appeal ---
+# ==========================================
+# 2. Custom CSS - Forensic Detective Theme
+# ==========================================
 st.markdown("""
 <style>
     /* Global Font & Theme */
     @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Inter:wght@400;600&display=swap');
-    
+
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
         color: #E0E0E0;
     }
-    
+
     h1, h2, h3 {
         font-family: 'Roboto Mono', monospace;
         font-weight: 700;
@@ -111,7 +120,7 @@ st.markdown("""
         color: #9E9E9E;
         margin-top: 8px;
     }
-    
+
     /* Report Box */
     .report-box {
         background-color: #2D3748;
@@ -127,167 +136,219 @@ st.markdown("""
         color: #00E5FF;
         margin-top: 0;
     }
+
+    /* Status badges */
+    .status-ok {
+        color: #51CF66;
+        font-weight: 600;
+    }
+
+    .status-error {
+        color: #FF6B6B;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Constants ---
-MODEL_NAME = "resnet34" # Must match your training
-NUM_CLASSES = 2
-IMG_SIZE = 224
-LABELS = {0: "REAL", 1: "FAKE"}
-
 # ==========================================
-# 2. Helper Functions
+# 3. Model Loading with Architecture Support
 # ==========================================
 
 @st.cache_resource
-def load_model(model_path):
-    """Loads the trained model (cached for speed)."""
+def load_deepfake_model(model_name: str, model_path: str):
+    """
+    Load trained deepfake detection model with architecture-specific handling
+
+    Args:
+        model_name: Model architecture name
+        model_path: Path to checkpoint file
+
+    Returns:
+        model: Loaded model
+        device: Device (cuda/mps/cpu)
+    """
     try:
+        # Get device
+        device = Config.get_device()
+
         # Initialize model architecture
-        model = timm.create_model(MODEL_NAME, pretrained=False, num_classes=NUM_CLASSES)
-        
-        # Load weights
-        # Ensure map_location handles CPU/GPU correctly
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        state_dict = torch.load(model_path, map_location=device)
-        model.load_state_dict(state_dict)
-        
+        model = get_model(
+            model_name=model_name,
+            num_classes=Config.NUM_CLASSES,
+            pretrained=False,  # We're loading trained weights
+            device=device
+        )
+
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location=device)
+
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        elif 'state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+
         model.eval()
-        model.to(device)
+
         return model, device
+
     except Exception as e:
-        st.error(f"Error loading model: {e}")
+        st.error(f"❌ Error loading model: {e}")
         return None, None
 
-def process_image(image):
-    """Prepares image for model inference and Grad-CAM."""
-    # Resize for display/processing
-    img_resized = image.resize((IMG_SIZE, IMG_SIZE))
-    rgb_img = np.float32(img_resized) / 255
-    
-    # Standard ImageNet normalization
-    input_tensor = preprocess_image(
-        rgb_img, 
-        mean=[0.485, 0.456, 0.406], 
-        std=[0.229, 0.224, 0.225]
-    )
-    return img_resized, rgb_img, input_tensor
-
-def get_gradcam(model, input_tensor, rgb_img, target_layer, device, original_size=None):
-    """Generates Grad-CAM heatmap overlay."""
-    cam = GradCAM(model=model, target_layers=[target_layer])
-
-    # We don't specify targets, so it defaults to the highest scoring class
-    grayscale_cam = cam(input_tensor=input_tensor.to(device))[0, :]
-
-    # Overlay heatmap on original image
-    visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
-    heatmap_img = Image.fromarray(visualization)
-
-    # Resize heatmap to match original image dimensions if provided
-    if original_size is not None:
-        heatmap_img = heatmap_img.resize(original_size, Image.LANCZOS)
-
-    return heatmap_img
-
-def ask_gemini(api_key, original_img, heatmap_img, prediction_label, confidence):
-    """Sends images to Gemini for qualitative analysis."""
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash') # Faster, cheaper model
-        
-        prompt = f"""
-        You are a forensic AI analyst. A deepfake detection model has analyzed an image.
-        
-        - **Model Prediction:** {prediction_label}
-        - **Confidence Score:** {confidence:.1%}
-        
-        **Visual Evidence:**
-        1.  **Image 1:** The original image being analyzed.
-        2.  **Image 2:** A Grad-CAM heatmap. The RED/YELLOW areas show exactly where the AI model found "suspicious" or "significant" features.
-        
-        **Your Task:**
-        Write a short, professional forensic report (3-4 sentences).
-        1.  Acknowledge the model's prediction.
-        2.  Analyze the heatmap: What specific facial features is the model focusing on? (e.g., eyes, mouth, hairline, background).
-        3.  Explain WHY: If it's FAKE, do these highlighted areas correspond to common deepfake artifacts (blurring, inconsistencies)? If REAL, does the focus look natural?
-        
-        Keep the tone objective and technical.
-        """
-        
-        response = model.generate_content([prompt, original_img, heatmap_img])
-        return response.text
-    except Exception as e:
-        return f"Error generating report: {str(e)}"
 
 # ==========================================
-# 3. Main App Layout
+# 4. Main Application
 # ==========================================
 
 def main():
-    # --- Sidebar ---
+    # --- Sidebar Configuration ---
     with st.sidebar:
         st.title("🕵️‍♂️ Forensic Toolkit")
         st.markdown("---")
-        
-        # API Key Input
-        api_key = st.text_input("Gemini API Key (Optional)", type="password", help="Required for the text explanation report.")
-        
-        st.markdown("### 🛠️ System Status")
-        model_path = "resnet34.pth" # HARDCODED: Update this filename if needed
-        
-        # Check if model exists
-        if os.path.exists(model_path):
-            st.success(f"Model Loaded: {MODEL_NAME}")
-            model, device = load_model(model_path)
-        else:
-            st.error(f"Model not found: {model_path}")
-            st.info("Please place your .pth file in the same directory as app.py")
-            return # Stop execution if no model
 
-        st.markdown("---")
-        st.markdown("### ℹ️ About")
-        st.info(
-            "This tool uses three pretrained models trained on a mixed dataset (Celeb-DF + StyleGAN + Diffusion) "
-            "to detect synthetic faces. You can switch between each model using the sidebar. "
-            "It uses **Grad-CAM** to visualize decision regions."
+        # Model Selection
+        st.markdown("### 🧠 Model Configuration")
+
+        model_name = st.selectbox(
+            "Select Model Architecture",
+            options=['resnet34', 'resnet50', 'efficientnet_b0', 'efficientnet_b4', 'vit_b_16', 'vit_b_32'],
+            index=0,
+            help="Choose the model architecture for analysis"
         )
 
-    # --- Main Content ---
+        # Determine model type
+        model_type = 'vit' if 'vit' in model_name else 'cnn'
+
+        # Model file path
+        model_path = st.text_input(
+            "Model Checkpoint Path",
+            value=f"{model_name}.pth",
+            help="Path to the trained model checkpoint file"
+        )
+
+        st.markdown("---")
+
+        # API Key Input
+        st.markdown("### 🔑 Gemini API Settings")
+        api_key = st.text_input(
+            "Gemini API Key (Optional)",
+            type="password",
+            value=Config.GEMINI_API_KEY,
+            help="Required for AI-powered forensic analysis report"
+        )
+
+        st.markdown("---")
+
+        # System Status
+        st.markdown("### 🛠️ System Status")
+
+        # Check model file
+        if os.path.exists(model_path):
+            st.markdown(f'<span class="status-ok">✓ Model file found</span>', unsafe_allow_html=True)
+
+            # Load model
+            with st.spinner("Loading model..."):
+                model, device = load_deepfake_model(model_name, model_path)
+
+            if model is not None:
+                st.markdown(f'<span class="status-ok">✓ Model loaded: {model_name}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="status-ok">✓ Device: {device}</span>', unsafe_allow_html=True)
+            else:
+                st.markdown('<span class="status-error">✗ Model loading failed</span>', unsafe_allow_html=True)
+                return
+        else:
+            st.markdown(f'<span class="status-error">✗ Model not found: {model_path}</span>', unsafe_allow_html=True)
+            st.info("💡 Place your .pth file in the app directory or update the path above")
+            return
+
+        st.markdown("---")
+
+        # About Section
+        st.markdown("### ℹ️ About")
+        st.info(
+            f"""
+            **Deepfake Forensic Detective**
+
+            This tool uses deep learning models trained on mixed datasets
+            (Celeb-DF, YouTube, FFHQ, StyleGAN, Stable Diffusion) to detect
+            synthetic media.
+
+            **Current Model:** {model_name}
+            **Architecture:** {model_type.upper()}
+
+            Features:
+            - Multi-architecture support (ResNet, EfficientNet, ViT)
+            - Grad-CAM explainability visualization
+            - AI-powered forensic analysis (Gemini)
+            """
+        )
+
+    # --- Main Content Area ---
     st.markdown("# 🔍 Deepfake Forensic Detective")
-    st.markdown("### Analyze suspicious images using advanced Computer Vision & XAI")
-    
-    # File Uploader in a "Card"
+    st.markdown("### Analyze suspicious images using advanced Computer Vision & Explainable AI")
+
+    # File Upload
     st.markdown('<div class="forensic-card">', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload a suspect image (JPG/PNG)", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader(
+        "📎 Upload Suspect Image (JPG/PNG/JPEG)",
+        type=["jpg", "png", "jpeg"],
+        help="Upload an image to analyze for deepfake artifacts"
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # Process uploaded image
     if uploaded_file is not None:
-        # --- 1. Preprocessing ---
-        col_1, col_2, col_3 = st.columns([1, 2, 1])
-        with col_2:
-            with st.spinner("Running forensic analysis algorithms..."):
+        # Display analysis in centered column
+        col_1, col_main, col_3 = st.columns([1, 3, 1])
+
+        with col_main:
+            with st.spinner("🔬 Running forensic analysis algorithms..."):
+                # Load image
                 image = Image.open(uploaded_file).convert("RGB")
-                img_resized, rgb_img, input_tensor = process_image(image)
-                
-                # --- 2. Inference ---
-                output = model(input_tensor.to(device))
-                probs = torch.softmax(output, dim=1)
-                conf, pred_class = torch.max(probs, 1)
-                
+
+                # Preprocess for model
+                input_tensor = process_uploaded_image(
+                    image,
+                    model_type=model_type,
+                    img_size=Config.IMG_SIZE,
+                    device=device
+                )
+
+                # Run inference
+                with torch.no_grad():
+                    output = model(input_tensor)
+                    probs = torch.softmax(output, dim=1)
+                    conf, pred_class = torch.max(probs, 1)
+
+                # Get prediction
+                LABELS = {0: "REAL", 1: "FAKE"}
                 label = LABELS[pred_class.item()]
                 score = conf.item()
-                
-                # --- 3. Grad-CAM ---
-                # ResNet-50 target layer is typically 'layer4' (last conv block)
-                target_layer = model.layer4[-1]
-                heatmap = get_gradcam(model, input_tensor, rgb_img, target_layer, device, original_size=image.size)
 
-        # --- 4. Display Results ---
+                # Generate Grad-CAM
+                try:
+                    heatmap_img, heatmap_raw = compute_gradcam(
+                        model=model,
+                        input_tensor=input_tensor,
+                        model_name=model_name,
+                        target_layer=None,  # Auto-select
+                        original_size=image.size  # Resize to original image dimensions
+                    )
+                    heatmap_pil = Image.fromarray(heatmap_img.astype('uint8'))
+                    gradcam_success = True
+                except Exception as e:
+                    st.warning(f"⚠️ Grad-CAM generation failed: {e}")
+                    heatmap_pil = None
+                    gradcam_success = False
+
+        # --- Display Results ---
+        st.markdown("---")
         st.markdown("### 📊 Analysis Results")
-        
-        # Result Banner
+
+        # Result Badge
         if label == "FAKE":
             st.markdown(f"""
             <div class="badge-container">
@@ -300,38 +361,78 @@ def main():
                 <span class="badge-real">✓ VERIFIED: REAL IMAGE</span>
             </div>
             """, unsafe_allow_html=True)
-        
+
         # Confidence Bar
         st.progress(score, text=f"Model Confidence: {score:.1%}")
 
-        # Visual Evidence Columns
+        # Visual Evidence: Side-by-side comparison
         col1, col2 = st.columns(2)
 
         with col1:
             st.markdown('<div class="forensic-card" style="text-align:center;">', unsafe_allow_html=True)
-            st.markdown('<p class="img-caption">Exhibit A: Original Image</p>', unsafe_allow_html=True)
-            st.image(image, use_container_width=True)
+            st.markdown('<p class="img-caption">📷 Exhibit A: Original Image</p>', unsafe_allow_html=True)
+            st.image(image, width="stretch")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col2:
             st.markdown('<div class="forensic-card" style="text-align:center;">', unsafe_allow_html=True)
-            st.markdown('<p class="img-caption">Exhibit B: AI Attention Heatmap</p>', unsafe_allow_html=True)
-            st.image(heatmap, use_container_width=True)
+            st.markdown('<p class="img-caption">🔥 Exhibit B: AI Attention Heatmap (Grad-CAM)</p>', unsafe_allow_html=True)
+            if gradcam_success and heatmap_pil:
+                st.image(heatmap_pil, width="stretch")
+                st.caption("Red/yellow regions indicate areas the model focused on for its decision")
+            else:
+                st.warning("Grad-CAM visualization not available")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # --- 5. Gemini Report ---
-        if api_key:
-            st.markdown("### 📝 Automated Forensic Report")
-            with st.spinner("Generative AI is compiling the report..."):
-                report = ask_gemini(api_key, img_resized, heatmap, label, score)
-                
-                st.markdown(f"""
-                <div class="report-box">
-                    <p>{report}</p>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.warning("⚠️ Enter your Gemini API key in the sidebar to unlock the qualitative analysis report.")
+        # --- Gemini Forensic Report ---
+        st.markdown("---")
+        if api_key and gradcam_success:
+            st.markdown("### 📝 AI-Powered Forensic Report")
+
+            with st.spinner("🤖 Generative AI is analyzing the evidence..."):
+                try:
+                    # Resize images for API efficiency
+                    img_resized = image.resize((Config.IMG_SIZE, Config.IMG_SIZE))
+
+                    report = get_gemini_explanation(
+                        api_key=api_key,
+                        original_image=img_resized,
+                        heatmap_image=heatmap_img,
+                        prediction=label,
+                        confidence=score
+                    )
+
+                    st.markdown(f"""
+                    <div class="report-box">
+                        <h4>🔍 Forensic Analysis Report</h4>
+                        <p>{report}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"❌ Error generating Gemini report: {e}")
+
+        elif not api_key:
+            st.info("💡 Enter your Gemini API key in the sidebar to unlock AI-powered forensic analysis")
+        elif not gradcam_success:
+            st.warning("⚠️ Gemini analysis requires successful Grad-CAM generation")
+
+        # --- Metrics ---
+        st.markdown("---")
+        st.markdown("### 📈 Metrics")
+
+        col_m1, col_m2 = st.columns(2)
+
+        with col_m1:
+            st.metric("Prediction", label)
+
+        with col_m2:
+            st.metric("Confidence", f"{score:.2%}")
+
+
+# ==========================================
+# 5. Entry Point
+# ==========================================
 
 if __name__ == "__main__":
     main()
