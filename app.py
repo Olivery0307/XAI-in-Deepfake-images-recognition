@@ -13,7 +13,7 @@ import sys
 # Import modular components
 from src.models import get_model, load_checkpoint
 from src.preprocessing import process_uploaded_image
-from src.xai_utils import compute_gradcam, get_gemini_explanation
+from src.xai_utils import compute_xai_visualization, get_gemini_explanation
 from configs.config import Config
 
 # ==========================================
@@ -281,7 +281,7 @@ def main():
 
             Features:
             - Multi-architecture support (ResNet, EfficientNet, ViT)
-            - Grad-CAM explainability visualization
+            - XAI visualization (Grad-CAM for CNNs, Attention Rollout for ViT)
             - AI-powered forensic analysis (Gemini)
             """
         )
@@ -328,9 +328,9 @@ def main():
                 label = LABELS[pred_class.item()]
                 score = conf.item()
 
-                # Generate Grad-CAM
+                # Generate XAI visualization (auto-switches between Grad-CAM and Attention Rollout)
                 try:
-                    heatmap_img, heatmap_raw = compute_gradcam(
+                    heatmap_img, heatmap_raw, xai_method = compute_xai_visualization(
                         model=model,
                         input_tensor=input_tensor,
                         model_name=model_name,
@@ -338,11 +338,12 @@ def main():
                         original_size=image.size  # Resize to original image dimensions
                     )
                     heatmap_pil = Image.fromarray(heatmap_img.astype('uint8'))
-                    gradcam_success = True
+                    xai_success = True
                 except Exception as e:
-                    st.warning(f"⚠️ Grad-CAM generation failed: {e}")
+                    st.warning(f"⚠️ XAI visualization generation failed: {e}")
                     heatmap_pil = None
-                    gradcam_success = False
+                    xai_success = False
+                    xai_method = "Unknown"
 
         # --- Display Results ---
         st.markdown("---")
@@ -376,17 +377,17 @@ def main():
 
         with col2:
             st.markdown('<div class="forensic-card" style="text-align:center;">', unsafe_allow_html=True)
-            st.markdown('<p class="img-caption">🔥 Exhibit B: AI Attention Heatmap (Grad-CAM)</p>', unsafe_allow_html=True)
-            if gradcam_success and heatmap_pil:
+            st.markdown(f'<p class="img-caption">🔥 Exhibit B: AI Attention Heatmap ({xai_method if xai_success else "N/A"})</p>', unsafe_allow_html=True)
+            if xai_success and heatmap_pil:
                 st.image(heatmap_pil, width="stretch")
-                st.caption("Red/yellow regions indicate areas the model focused on for its decision")
+                st.caption(f"Red/yellow regions indicate areas the model focused on for its decision (using {xai_method})")
             else:
-                st.warning("Grad-CAM visualization not available")
+                st.warning("XAI visualization not available")
             st.markdown('</div>', unsafe_allow_html=True)
 
         # --- Gemini Forensic Report ---
         st.markdown("---")
-        if api_key and gradcam_success:
+        if api_key and xai_success:
             st.markdown("### 📝 AI-Powered Forensic Report")
 
             with st.spinner("🤖 Generative AI is analyzing the evidence..."):
@@ -399,12 +400,13 @@ def main():
                         original_image=img_resized,
                         heatmap_image=heatmap_img,
                         prediction=label,
-                        confidence=score
+                        confidence=score,
+                        model_name="gemini-2.0-flash-exp"
                     )
 
                     st.markdown(f"""
                     <div class="report-box">
-                        <h4>🔍 Forensic Analysis Report</h4>
+                        <h4>🔍 Forensic Analysis Report (via {xai_method})</h4>
                         <p>{report}</p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -414,8 +416,8 @@ def main():
 
         elif not api_key:
             st.info("💡 Enter your Gemini API key in the sidebar to unlock AI-powered forensic analysis")
-        elif not gradcam_success:
-            st.warning("⚠️ Gemini analysis requires successful Grad-CAM generation")
+        elif not xai_success:
+            st.warning("⚠️ Gemini analysis requires successful XAI visualization generation")
 
         # --- Metrics ---
         st.markdown("---")

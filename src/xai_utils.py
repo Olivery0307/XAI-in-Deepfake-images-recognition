@@ -227,32 +227,190 @@ Provide your analysis in a clear, professional forensic report format (3-4 parag
         return error_msg
 
 
+def compute_attention_rollout(
+    attentions: tuple,
+    discard_ratio: float = 0.9
+) -> torch.Tensor:
+    """
+    Compute attention rollout from all transformer layers.
+
+    Args:
+        attentions: Tuple of attention tensors from each layer
+                   Shape per layer: (batch_size, num_heads, num_tokens, num_tokens)
+        discard_ratio: Percentage of lowest attention values to discard (default: 0.9)
+
+    Returns:
+        Attention map for the [CLS] token (excluding CLS token itself)
+        Shape: (num_patches,)
+    """
+    # Get device from first attention tensor
+    device = attentions[0].device
+
+    # Create identity matrix on the same device
+    result = torch.eye(attentions[0].size(-1)).to(device)
+
+    for attention in attentions:
+        # Average across all heads: (batch_size, num_heads, num_tokens, num_tokens) -> (batch_size, num_tokens, num_tokens)
+        attention_heads_fused = attention.mean(dim=1)
+        # Take first batch
+        attention_heads_fused = attention_heads_fused[0]
+
+        # Drop the lowest attentions
+        flat = attention_heads_fused.view(-1)
+        _, indices = flat.topk(k=int(flat.size(-1) * discard_ratio), largest=False)
+        flat[indices] = 0
+
+        # Normalize
+        I = torch.eye(attention_heads_fused.size(-1)).to(device)
+        a = (attention_heads_fused + 1.0 * I) / 2
+        a = a / a.sum(dim=-1, keepdim=True)
+
+        # Multiply with result
+        result = torch.matmul(a, result)
+
+    # Get attention for CLS token, excluding CLS token itself
+    mask = result[0, 1:]
+    return mask
+
+
 def visualize_attention_rollout_vit(
     model: nn.Module,
     input_tensor: torch.Tensor,
-    device: str = 'cuda'
-) -> np.ndarray:
+    discard_ratio: float = 0.9,
+    original_size: Optional[Tuple[int, int]] = None
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute attention rollout for Vision Transformer models
-    Alternative to Grad-CAM that's more native to ViT architecture
+    More native to ViT architecture than Grad-CAM
 
     Args:
-        model: ViT model
-        input_tensor: Input image tensor
-        device: Device
+        model: ViT model (must support output_attentions=True)
+        input_tensor: Input image tensor (1, 3, H, W) - MUST be normalized
+        discard_ratio: Percentage of lowest attention values to discard (default: 0.9)
+        original_size: Optional (width, height) to resize heatmap to original image size
 
     Returns:
-        Attention map as numpy array
+        cam_image: Attention rollout visualization as RGB numpy array (0-255)
+        heatmap: Raw attention map as numpy array (0-1)
     """
+    model.eval()
+    device = next(model.parameters()).device
+    input_tensor = input_tensor.to(device)
 
-    # This is a simplified placeholder
-    # Full implementation would require hooking into ViT attention layers
-    # For now, we rely on Grad-CAM with reshape_transform
+    # Get model outputs with attentions
+    with torch.no_grad():
+        # For HuggingFace models
+        if hasattr(model, 'vit'):
+            # ViTForImageClassification
+            outputs = model(input_tensor, output_attentions=True)
+        else:
+            # Try generic forward with output_attentions
+            outputs = model(input_tensor, output_attentions=True)
 
-    raise NotImplementedError(
-        "Full Attention Rollout not implemented. "
-        "Use compute_gradcam with ViT reshape_transform instead."
-    )
+        # Extract attentions
+        if hasattr(outputs, 'attentions'):
+            attentions = outputs.attentions
+        else:
+            raise ValueError("Model does not support output_attentions=True")
+
+    # Compute attention rollout
+    mask = compute_attention_rollout(attentions, discard_ratio=discard_ratio)
+
+    # Reshape mask to image dimensions
+    # mask shape: (num_patches,) where num_patches = (H/patch_size) * (W/patch_size)
+    num_patches = int(mask.shape[0] ** 0.5)
+    mask = mask.reshape(num_patches, num_patches).cpu().numpy()
+
+    # Denormalize input tensor for visualization
+    from .preprocessing import denormalize_image
+    denorm_tensor = denormalize_image(input_tensor.squeeze(0).cpu())
+
+    # Convert to numpy (H, W, C) in range [0, 1]
+    rgb_img = denorm_tensor.permute(1, 2, 0).numpy()
+    rgb_img = np.float32(rgb_img)
+
+    # Determine target size
+    if original_size is not None:
+        width, height = original_size
+    else:
+        # Use input tensor size (typically 224x224)
+        height, width = input_tensor.shape[2], input_tensor.shape[3]
+
+    # Resize mask to target size
+    mask_resized = cv2.resize(mask, (width, height), interpolation=cv2.INTER_LINEAR)
+
+    # Normalize mask to [0, 1]
+    mask_resized = (mask_resized - mask_resized.min()) / (mask_resized.max() - mask_resized.min() + 1e-8)
+
+    # Resize rgb_img if needed
+    if original_size is not None:
+        rgb_img_resized = cv2.resize(rgb_img, (width, height), interpolation=cv2.INTER_LINEAR)
+    else:
+        rgb_img_resized = rgb_img
+
+    # Create visualization using same function as Grad-CAM for consistency
+    cam_image = show_cam_on_image(rgb_img_resized, mask_resized, use_rgb=True)
+
+    return cam_image, mask_resized
+
+
+def compute_xai_visualization(
+    model: nn.Module,
+    input_tensor: torch.Tensor,
+    model_name: str,
+    target_layer: Optional[nn.Module] = None,
+    target_category: Optional[int] = None,
+    original_size: Optional[Tuple[int, int]] = None,
+    use_attention_rollout: bool = None
+) -> Tuple[np.ndarray, np.ndarray, str]:
+    """
+    Unified function to compute XAI visualization.
+    Automatically chooses between Grad-CAM and Attention Rollout based on model type.
+
+    Args:
+        model: Trained model
+        input_tensor: Input image tensor (1, 3, H, W) - MUST be normalized
+        model_name: Name of model
+        target_layer: Target layer for Grad-CAM (auto-selected if None)
+        target_category: Target class index (uses predicted class if None)
+        original_size: Optional (width, height) to resize heatmap to original image size
+        use_attention_rollout: Force use of attention rollout (None = auto-detect for ViT)
+
+    Returns:
+        cam_image: XAI visualization as RGB numpy array (0-255)
+        heatmap: Raw heatmap as numpy array (0-1)
+        method_used: String indicating which method was used ("Grad-CAM" or "Attention Rollout")
+    """
+    model_name_lower = model_name.lower()
+
+    # Auto-detect if we should use attention rollout for ViT models
+    if use_attention_rollout is None:
+        use_attention_rollout = 'vit' in model_name_lower
+
+    if use_attention_rollout:
+        try:
+            cam_image, heatmap = visualize_attention_rollout_vit(
+                model=model,
+                input_tensor=input_tensor,
+                discard_ratio=0.9,
+                original_size=original_size
+            )
+            return cam_image, heatmap, "Attention Rollout"
+        except Exception as e:
+            print(f"Attention Rollout failed, falling back to Grad-CAM: {e}")
+            # Fall back to Grad-CAM
+            use_attention_rollout = False
+
+    if not use_attention_rollout:
+        cam_image, heatmap = compute_gradcam(
+            model=model,
+            input_tensor=input_tensor,
+            model_name=model_name,
+            target_layer=target_layer,
+            target_category=target_category,
+            original_size=original_size
+        )
+        return cam_image, heatmap, "Grad-CAM"
 
 
 def create_side_by_side_comparison(
