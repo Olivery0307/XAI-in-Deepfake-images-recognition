@@ -28,6 +28,7 @@ ENV/
 
 # Jupyter Notebook
 .ipynb_checkpoints/
+*.html
 
 # PyCharm
 .idea/
@@ -37,6 +38,7 @@ ENV/
 
 # Model Checkpoints
 checkpoints/
+models/
 *.pth
 *.pt
 *.ckpt
@@ -45,6 +47,7 @@ checkpoints/
 data/
 datasets/
 gcs_data/
+hold-out-set/
 
 # Splits
 splits/
@@ -54,6 +57,8 @@ splits/
 logs/
 *.log
 wandb/
+nohup.out
+*.gdoc
 
 # OS
 .DS_Store

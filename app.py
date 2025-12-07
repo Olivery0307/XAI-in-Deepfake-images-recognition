@@ -175,20 +175,23 @@ def load_deepfake_model(model_name: str, model_path: str):
         model = get_model(
             model_name=model_name,
             num_classes=Config.NUM_CLASSES,
-            pretrained=False,  # We're loading trained weights
+            pretrained=False,
             device=device
         )
 
-        # Load checkpoint
-        checkpoint = torch.load(model_path, map_location=device)
+        # 1. Handle path: Ensure it looks in 'models/' directory if not provided
+        if not os.path.exists(model_path):
+            # Try joining with 'models/' folder
+            potential_path = os.path.join("models", os.path.basename(model_path))
+            if os.path.exists(potential_path):
+                model_path = potential_path
 
-        # Handle different checkpoint formats
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        elif 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
+        # 2. Load weights directly (No checkpoint dictionary logic)
+        print(f"Loading weights from: {model_path}")
+        state_dict = torch.load(model_path, map_location=device)
+        
+        # Load state dictionary into model
+        model.load_state_dict(state_dict)
 
         model.eval()
 
@@ -214,7 +217,7 @@ def main():
 
         model_name = st.selectbox(
             "Select Model Architecture",
-            options=['resnet34', 'resnet50', 'efficientnet_b0', 'efficientnet_b4', 'vit_b_16', 'vit_b_32'],
+            options=['resnet34', 'efficientnet_b4', 'vit_b_16'],
             index=0,
             help="Choose the model architecture for analysis"
         )
@@ -224,9 +227,9 @@ def main():
 
         # Model file path
         model_path = st.text_input(
-            "Model Checkpoint Path",
-            value=f"{model_name}.pth",
-            help="Path to the trained model checkpoint file"
+            "Model Path",
+            value=f"models/{model_name}.pth",
+            help="Path to the trained model file"
         )
 
         st.markdown("---")
@@ -320,7 +323,10 @@ def main():
                 # Run inference
                 with torch.no_grad():
                     output = model(input_tensor)
-                    probs = torch.softmax(output, dim=1)
+                    if model_type == 'vit': 
+                      probs = torch.softmax(output.logits, dim=1)
+                    else:
+                      probs = torch.softmax(output, dim=1)
                     conf, pred_class = torch.max(probs, 1)
 
                 # Get prediction
@@ -398,10 +404,9 @@ def main():
                     report = get_gemini_explanation(
                         api_key=api_key,
                         original_image=img_resized,
-                        heatmap_image=heatmap_img,
+                        heatmap_image=heatmap_pil,
                         prediction=label,
-                        confidence=score,
-                        model_name="gemini-2.0-flash-exp"
+                        confidence=score
                     )
 
                     st.markdown(f"""

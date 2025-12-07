@@ -8,6 +8,8 @@ import torch.nn as nn
 from torchvision import models
 import timm
 from typing import Optional
+from transformers import ViTForImageClassification, ViTConfig
+
 
 
 def get_model(
@@ -74,37 +76,26 @@ def get_model(
         num_features = model.classifier[1].in_features
         model.classifier[1] = nn.Linear(num_features, num_classes)
 
-    # ========== VISION TRANSFORMER (ViT) MODELS ==========
-    # NOTE: ViT has different architecture - uses 'heads' instead of 'fc'
+    # ========== VISION TRANSFORMER (ViT) - HUGGING FACE ==========
     elif model_name == 'vit_b_16':
+        hf_model_id = 'google/vit-base-patch16-224'
+
+        print(f"Loading ViT from Hugging Face: {hf_model_id}")
+        
         if pretrained:
-            model = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
+            # Load pretrained model with ignore_mismatched_sizes because we are changing num_labels
+            model = ViTForImageClassification.from_pretrained(
+                hf_model_id,
+                num_labels=num_classes,
+                ignore_mismatched_sizes=True,
+                output_attentions=True # CRITICAL: Enable attentions for Rollout
+            )
         else:
-            model = models.vit_b_16(weights=None)
-
-        # Replace classification head
-        # ViT uses model.heads.head instead of model.fc
-        num_features = model.heads.head.in_features
-        model.heads.head = nn.Linear(num_features, num_classes)
-
-    elif model_name == 'vit_b_32':
-        if pretrained:
-            model = models.vit_b_32(weights=models.ViT_B_32_Weights.IMAGENET1K_V1)
-        else:
-            model = models.vit_b_32(weights=None)
-
-        # Replace classification head
-        num_features = model.heads.head.in_features
-        model.heads.head = nn.Linear(num_features, num_classes)
-
-    # ========== ALTERNATIVE: Use timm for more ViT variants ==========
-    elif model_name.startswith('vit_') and pretrained:
-        # Fallback to timm library for additional ViT models
-        try:
-            model = timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
-            print(f"Loaded {model_name} from timm library")
-        except Exception as e:
-            raise ValueError(f"Model {model_name} not found in torchvision or timm: {e}")
+            # Initialize from config (random weights)
+            config = ViTConfig.from_pretrained(hf_model_id)
+            config.num_labels = num_classes
+            config.output_attentions = True
+            model = ViTForImageClassification(config)
 
     else:
         raise ValueError(
@@ -145,14 +136,12 @@ def get_target_layer(model: nn.Module, model_name: str) -> nn.Module:
     # ViT: Use last encoder block
     # Note: ViT requires special handling for Grad-CAM (reshape_transform)
     elif 'vit' in model_name:
-        # For torchvision ViT models
-        if hasattr(model, 'encoder'):
-            return model.encoder.layers.encoder_layer_11  # Last encoder layer
-        # For timm ViT models
-        elif hasattr(model, 'blocks'):
-            return model.blocks[-1]
+        #elif 'vit' in model_name:
+        if hasattr(model, 'vit'):
+            # Hugging Face structure: model.vit.layernorm
+            return model.vit.layernorm
         else:
-            raise ValueError(f"Unable to determine target layer for ViT model: {model_name}")
+            raise ValueError(f"Unable to find 'vit.layernorm' in Hugging Face model.")
 
     else:
         raise ValueError(f"Unknown model type for target layer selection: {model_name}")

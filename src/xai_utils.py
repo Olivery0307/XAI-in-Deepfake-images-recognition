@@ -17,44 +17,6 @@ import base64
 import time
 
 
-def get_reshape_transform_vit(model_name: str):
-    """
-    Get reshape transform function for ViT models (required for Grad-CAM)
-
-    Args:
-        model_name: Name of the ViT model
-
-    Returns:
-        Reshape transform function
-    """
-    def reshape_transform(tensor, height=14, width=14):
-        """
-        Reshape ViT output for Grad-CAM compatibility
-
-        ViT outputs shape: (batch_size, num_tokens, embedding_dim)
-        Need to reshape to: (batch_size, embedding_dim, height, width)
-        """
-        # Remove CLS token (first token)
-        result = tensor[:, 1:, :]
-
-        # Get dimensions
-        batch_size, num_tokens, embedding_dim = result.shape
-
-        # Calculate grid size
-        # For ViT-B/16 with 224x224 input: 224/16 = 14x14 patches
-        grid_size = int(np.sqrt(num_tokens))
-
-        # Reshape to spatial format
-        result = result.reshape(batch_size, grid_size, grid_size, embedding_dim)
-
-        # Permute to (batch_size, embedding_dim, height, width)
-        result = result.permute(0, 3, 1, 2)
-
-        return result
-
-    return reshape_transform
-
-
 def compute_gradcam(
     model: nn.Module,
     input_tensor: torch.Tensor,
@@ -79,8 +41,16 @@ def compute_gradcam(
         heatmap: Raw heatmap as numpy array (0-1)
     """
 
+
     model.eval()
     model_name = model_name.lower()
+
+    # 1. Check for ViT and redirect/error
+    if 'vit' in model_name:
+        raise ValueError(
+            f"Model '{model_name}' is a Vision Transformer. "
+            "Please use 'compute_attention_rollout' instead of Grad-CAM."
+        )
 
     # Auto-select target layer if not provided
     if target_layer is None:
@@ -150,125 +120,97 @@ def compute_gradcam(
 def get_gemini_explanation(
     api_key: str,
     original_image: Image.Image,
-    heatmap_image: np.ndarray,
+    heatmap_image: Image.Image,
     prediction: str,
     confidence: float,
-    model_name: str = "gemini-2.5-flash",
-    timeout: int = 30
+    model_name_for_context: str = "CNN"
 ) -> str:
     """
-    Get forensic analysis from Gemini AI based on Grad-CAM heatmap
-
-    Args:
-        api_key: Gemini API key
-        original_image: Original PIL image
-        heatmap_image: Grad-CAM visualization (numpy array RGB)
-        prediction: Prediction label ('Real' or 'Fake')
-        confidence: Prediction confidence (0-1)
-        model_name: Gemini model name
-        timeout: Request timeout in seconds
-
-    Returns:
-        Analysis text from Gemini
+    Generate forensic report using Gemini Pro Vision
     """
-
-    if not api_key:
-        return "⚠ Gemini API key not provided. Please set GEMINI_API_KEY to enable AI analysis."
-
     try:
-        # Configure Gemini API
         genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # Convert heatmap numpy array to PIL Image
-        heatmap_pil = Image.fromarray(heatmap_image.astype('uint8'))
+        # Determine visualization type based on model context
+        viz_type = "Attention Rollout (Transformer Attention)" if "vit" in model_name_for_context.lower() else "Grad-CAM (Gradient Activation)"
 
-        # Create forensic analysis prompt
-        prompt = f"""You are a forensic image analyst specializing in deepfake detection.
+        prompt = f"""
+        You are a forensic AI analyst specializing in Deepfake Detection.
+        
+        **Context:**
+        - **Model Prediction:** {prediction}
+        - **Confidence:** {confidence:.1%}
+        - **Visualization Type:** {viz_type}
+        
+        **Visual Evidence:**
+        1.  **Image 1 (Original):** The suspect image.
+        2.  **Image 2 (Heatmap):** The {viz_type} map. Red/Yellow areas indicate the primary visual features the model used to make its decision.
+        
+        **Task:**
+        Provide a concise forensic summary listing exactly THREE reasons why the image is likely {prediction}, based on the visual evidence.
+        
+        **Format:**
+        1.  **[Feature]:** [Observation from heatmap] -> [Forensic Interpretation]
+        2.  **[Feature]:** [Observation from heatmap] -> [Forensic Interpretation]
+        3.  **[Feature]:** [Observation from heatmap] -> [Forensic Interpretation]
+        
+        Keep it brief and objective.
+        """
 
-The AI model has classified this image as **{prediction}** with {confidence*100:.1f}% confidence.
-
-The heatmap overlay shows regions that influenced the model's decision:
-- RED/YELLOW regions: Areas the model focused on most
-- GREEN/BLUE regions: Less influential areas
-
-**Your Task:**
-Analyze the heatmap and provide a detailed forensic report covering:
-
-1. **Focus Areas**: Which facial features or regions did the model focus on? (eyes, nose, mouth, skin texture, edges, background, etc.)
-
-2. **Potential Artifacts**: Do the highlighted regions correspond to known deepfake artifacts?
-   - Unnatural blending around facial boundaries
-   - Inconsistent lighting or shadows
-   - Unusual texture patterns
-   - Asymmetries in facial features
-   - Artifacts in teeth, eyes, or hair
-
-3. **Confidence Assessment**: Does the heatmap support the {confidence*100:.1f}% confidence level? Are the focus areas typical for {prediction.lower()} images?
-
-4. **Limitations**: What limitations might this analysis have? Are there ambiguous regions?
-
-Provide your analysis in a clear, professional forensic report format (3-4 paragraphs). Be specific about spatial locations (e.g., "left eye region", "mouth boundary", "right cheek").
-"""
-
-        # Initialize model
-        model = genai.GenerativeModel(model_name)
-
-        # Generate response with both images
-        response = model.generate_content(
-            [prompt, original_image, heatmap_pil],
-            request_options={"timeout": timeout}
-        )
-
+        response = model.generate_content([prompt, original_image, heatmap_image])
         return response.text
 
     except Exception as e:
-        error_msg = f"⚠ Gemini API Error: {str(e)}"
-        print(error_msg)
-        return error_msg
+        return f"Error generating Gemini report: {str(e)}"
 
 
-def compute_attention_rollout(
-    attentions: tuple,
-    discard_ratio: float = 0.9
-) -> torch.Tensor:
+def attention_rollout(attentions: Tuple[torch.Tensor], discard_ratio: float = 0.9) -> torch.Tensor:
     """
     Compute attention rollout from all transformer layers.
-
+    
     Args:
-        attentions: Tuple of attention tensors from each layer
-                   Shape per layer: (batch_size, num_heads, num_tokens, num_tokens)
-        discard_ratio: Percentage of lowest attention values to discard (default: 0.9)
-
+        attentions: tuple of attention tensors from each layer
+        discard_ratio: percentage of lowest attention values to discard
+        
     Returns:
-        Attention map for the [CLS] token (excluding CLS token itself)
-        Shape: (num_patches,)
+        Attention map for the [CLS] token
     """
     # Get device from first attention tensor
     device = attentions[0].device
-
-    # Create identity matrix on the same device
-    result = torch.eye(attentions[0].size(-1)).to(device)
-
+    
+    # Start with Identity matrix
+    # Attention shape: (batch_size, num_heads, num_tokens, num_tokens)
+    # We assume batch_size is handled outside or we take first element if it's 1
+    # But here we process assuming attentions are already squeezed or we process per item
+    # The provided logic processes a single item's attention map typically
+    
+    # Let's adapt to handle the tuple structure directly
+    # Assuming attentions is a tuple of tensors of shape (1, num_heads, num_tokens, num_tokens)
+    
+    num_tokens = attentions[0].size(-1)
+    result = torch.eye(num_tokens).to(device)
+    
     for attention in attentions:
-        # Average across all heads: (batch_size, num_heads, num_tokens, num_tokens) -> (batch_size, num_tokens, num_tokens)
-        attention_heads_fused = attention.mean(dim=1)
-        # Take first batch
-        attention_heads_fused = attention_heads_fused[0]
-
-        # Drop the lowest attentions
+        # Fuse heads (batch dim is 0)
+        # attention shape: [1, num_heads, num_tokens, num_tokens]
+        attention_heads_fused = attention.mean(dim=1) # [1, num_tokens, num_tokens]
+        attention_heads_fused = attention_heads_fused[0] # [num_tokens, num_tokens]
+        
+        # Drop the lowest attentions (noise filtering)
         flat = attention_heads_fused.view(-1)
         _, indices = flat.topk(k=int(flat.size(-1) * discard_ratio), largest=False)
         flat[indices] = 0
-
-        # Normalize
-        I = torch.eye(attention_heads_fused.size(-1)).to(device)
+        
+        # Normalize: (A + I) / 2
+        I = torch.eye(num_tokens).to(device)
         a = (attention_heads_fused + 1.0 * I) / 2
         a = a / a.sum(dim=-1, keepdim=True)
-
-        # Multiply with result
+        
+        # Recursive multiplication
         result = torch.matmul(a, result)
-
-    # Get attention for CLS token, excluding CLS token itself
+    
+    # Extract Mask from Last Layer ([CLS] token which is index 0)
     mask = result[0, 1:]
     return mask
 
@@ -276,82 +218,59 @@ def compute_attention_rollout(
 def visualize_attention_rollout_vit(
     model: nn.Module,
     input_tensor: torch.Tensor,
-    discard_ratio: float = 0.9,
-    original_size: Optional[Tuple[int, int]] = None
+    original_size: Optional[Tuple[int, int]] = None,
+    discard_ratio: float = 0.9
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Compute attention rollout for Vision Transformer models
-    More native to ViT architecture than Grad-CAM
-
+    Compute Attention Rollout for Vision Transformers (ViT) and return visualization.
+    
     Args:
-        model: ViT model (must support output_attentions=True)
-        input_tensor: Input image tensor (1, 3, H, W) - MUST be normalized
-        discard_ratio: Percentage of lowest attention values to discard (default: 0.9)
-        original_size: Optional (width, height) to resize heatmap to original image size
-
-    Returns:
-        cam_image: Attention rollout visualization as RGB numpy array (0-255)
-        heatmap: Raw attention map as numpy array (0-1)
+        model: HuggingFace ViT model (must be initialized with output_attentions=True)
+        input_tensor: Preprocessed image tensor (1, 3, H, W)
+        original_size: (width, height) to resize heatmap
+        discard_ratio: Percentage of lowest attentions to discard (noise filtering)
     """
     model.eval()
-    device = next(model.parameters()).device
-    input_tensor = input_tensor.to(device)
-
-    # Get model outputs with attentions
+    
+    # 1. Forward pass to get attentions
     with torch.no_grad():
-        # For HuggingFace models
-        if hasattr(model, 'vit'):
-            # ViTForImageClassification
-            outputs = model(input_tensor, output_attentions=True)
-        else:
-            # Try generic forward with output_attentions
-            outputs = model(input_tensor, output_attentions=True)
-
-        # Extract attentions
-        if hasattr(outputs, 'attentions'):
-            attentions = outputs.attentions
-        else:
-            raise ValueError("Model does not support output_attentions=True")
-
-    # Compute attention rollout
-    mask = compute_attention_rollout(attentions, discard_ratio=discard_ratio)
-
-    # Reshape mask to image dimensions
-    # mask shape: (num_patches,) where num_patches = (H/patch_size) * (W/patch_size)
-    num_patches = int(mask.shape[0] ** 0.5)
-    mask = mask.reshape(num_patches, num_patches).cpu().numpy()
-
-    # Denormalize input tensor for visualization
+        outputs = model(input_tensor, output_attentions=True)
+    
+    # tuple of (num_layers) tensors, each [batch, num_heads, num_tokens, num_tokens]
+    attentions = outputs.attentions 
+    
+    # 2. Compute Rollout
+    mask = attention_rollout(attentions, discard_ratio=discard_ratio)
+    
+    # 3. Reshape to 2D grid
+    # Assuming square grid: 14x14 for base models (196 tokens)
+    width = int(mask.size(-1)**0.5)
+    mask = mask.reshape(width, width).cpu().numpy()
+    
+    # Normalize mask to [0, 1] for visualization
+    mask = (mask - mask.min()) / (mask.max() - mask.min())
+    
+    # 4. Visualization Preparation
+    # Denormalize original image
     from .preprocessing import denormalize_image
-    denorm_tensor = denormalize_image(input_tensor.squeeze(0).cpu())
-
-    # Convert to numpy (H, W, C) in range [0, 1]
+    # ViT standard normalization (0.5, 0.5, 0.5)
+    denorm_tensor = denormalize_image(input_tensor.squeeze(0).cpu(), mean=[0.5]*3, std=[0.5]*3)
     rgb_img = denorm_tensor.permute(1, 2, 0).numpy()
     rgb_img = np.float32(rgb_img)
 
-    # Determine target size
-    if original_size is not None:
-        width, height = original_size
+    # Resize both to target size
+    if original_size:
+        w, h = original_size
     else:
-        # Use input tensor size (typically 224x224)
-        height, width = input_tensor.shape[2], input_tensor.shape[3]
-
-    # Resize mask to target size
-    mask_resized = cv2.resize(mask, (width, height), interpolation=cv2.INTER_LINEAR)
-
-    # Normalize mask to [0, 1]
-    mask_resized = (mask_resized - mask_resized.min()) / (mask_resized.max() - mask_resized.min() + 1e-8)
-
-    # Resize rgb_img if needed
-    if original_size is not None:
-        rgb_img_resized = cv2.resize(rgb_img, (width, height), interpolation=cv2.INTER_LINEAR)
-    else:
-        rgb_img_resized = rgb_img
-
-    # Create visualization using same function as Grad-CAM for consistency
-    cam_image = show_cam_on_image(rgb_img_resized, mask_resized, use_rgb=True)
-
-    return cam_image, mask_resized
+        w, h = 224, 224 # Default
+        
+    mask_resized = cv2.resize(mask, (w, h))
+    rgb_resized = cv2.resize(rgb_img, (w, h))
+    
+    # Apply color map
+    visualization = show_cam_on_image(rgb_resized, mask_resized, use_rgb=True)
+    
+    return visualization, mask_resized
 
 
 def compute_xai_visualization(

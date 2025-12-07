@@ -13,7 +13,6 @@ numpy>=1.24.0
 
 # Explainable AI (XAI)
 grad-cam>=1.4.0
-pytorch-grad-cam>=1.4.0
 
 # Generative AI Integration
 google-generativeai>=0.3.0

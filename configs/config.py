@@ -11,7 +11,7 @@ class Config:
 
     # ========== PATHS ==========
     # Google Cloud Storage mount point (for Colab training)
-    GCS_MOUNT_POINT = "/content/gcs_data/"
+    GCS_MOUNT_POINT = "/content/gcs_data"
 
     # Dataset sub-paths
     PATHS = {
@@ -21,21 +21,23 @@ class Config:
         'celeb_synthesis': os.path.join(GCS_MOUNT_POINT, 'Celeb-synthesis'),
 
         # Image-based datasets (file-level splitting)
-        'ffhq_real': os.path.join(GCS_MOUNT_POINT, 'FFHQ-real'),
-        'stylegan_fake': os.path.join(GCS_MOUNT_POINT, 'StyleGAN-fake'),
-        'stablediffusion_fake': os.path.join(GCS_MOUNT_POINT, 'StableDiffusion-fake'),
+        'ffhq_real': os.path.join(GCS_MOUNT_POINT, 'FFHQ-real-V2'),
+        'stylegan_fake': os.path.join(GCS_MOUNT_POINT, 'StyleGan'),
+        'stablediffusion_fake': os.path.join(GCS_MOUNT_POINT, 'StableDiffusion-fake-V2'),
     }
 
     # Output paths
     CHECKPOINT_DIR = "./checkpoints"
     SPLITS_DIR = "./splits"
     LOGS_DIR = "./logs"
+    HOLDOUT_DIR = "./hold-out-set"
 
     # ========== HYPERPARAMETERS ==========
     BATCH_SIZE = 32
     LEARNING_RATE = 1e-4
-    NUM_EPOCHS = 10
-    IMG_SIZE = 224
+    NUM_EPOCHS = 5
+    IMG_SIZE = 380
+    # IMG_SIZE = 224
     SEED = 42
     NUM_WORKERS = 4
 
@@ -53,7 +55,7 @@ class Config:
     MIN_DELTA = 0.001
 
     # ========== SUPPORTED MODELS ==========
-    SUPPORTED_MODELS = ['resnet34', 'resnet50', 'efficientnet_b0', 'efficientnet_b4', 'vit_b_16', 'vit_b_32']
+    SUPPORTED_MODELS = ['resnet34', 'efficientnet_b4', 'vit_b_16']
 
     # ========== SECRETS ==========
     # Gemini API Key (load from environment or Kaggle secrets)
@@ -63,11 +65,8 @@ class Config:
     # Target layers for Grad-CAM (auto-selected if None)
     GRADCAM_TARGET_LAYERS = {
         'resnet34': None,  # Will auto-select layer4[-1]
-        'resnet50': None,
-        'efficientnet_b0': None,  # Will auto-select features[-1]
         'efficientnet_b4': None,
-        'vit_b_16': None,  # Will handle ViT with reshape_transform
-        'vit_b_32': None,
+        'vit_b_16': None,
     }
 
     @classmethod

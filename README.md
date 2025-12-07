@@ -7,7 +7,7 @@ A production-ready deepfake detection system that combines advanced deep learnin
 - **Multi-Architecture Support**: ResNet34/50, EfficientNet-B0/B4, Vision Transformer (ViT-B/16, ViT-B/32)
 - **Mixed Dataset Training**: Supports Celeb-DF, YouTube, FFHQ, StyleGAN, and Stable Diffusion datasets
 - **Smart Data Splitting**: Video-aware splitting for Celeb-DF/YouTube (prevents leakage), file-level for GAN images
-- **Explainable AI**: Grad-CAM visualization with automatic layer selection for different architectures
+- **Explainable AI**: Grad-CAM for CNNs + Attention Rollout for ViT with automatic method selection
 - **Gemini AI Integration**: AI-powered forensic analysis reports
 - **Streamlit Web App**: Professional "Forensic Detective" themed interface
 - **Google Colab Ready**: Optimized for training on Colab Pro with GCS integration
@@ -25,14 +25,18 @@ deepfake_project/
 │   ├── preprocessing.py       # Image transforms (training/inference)
 │   ├── models.py              # Model factory (ResNet/EfficientNet/ViT)
 │   ├── trainer.py             # Training loops with best model checkpointing
-│   └── xai_utils.py           # Grad-CAM and Gemini API integration
+│   ├── eval.py                # Model evaluation utilities
+│   └── xai_utils.py           # Grad-CAM, Attention Rollout, and Gemini API integration
 ├── notebooks/
 │   └── main_training.ipynb    # Google Colab training orchestration notebook
 ├── app.py                     # Streamlit web application
 ├── requirements.txt           # Python dependencies
-├── EfficientNet.ipynb         # Original research notebook (legacy)
-├── Resnet.ipynb              # Original research notebook (legacy)
-└── ViT.ipynb                 # Original research notebook (legacy)
+├── archive/
+│   ├── EfficientNet.ipynb     # Original research notebook (legacy)
+│   ├── Resnet.ipynb          # Original research notebook (legacy)
+│   └── ViT.ipynb             # Original research notebook (legacy)
+├── models/                    # Saved model checkpoints (.pth files)
+└── hold-out-set/              # Test images for evaluation
 ```
 
 ## 🚀 Quick Start
@@ -157,12 +161,15 @@ output = model(input_tensor)
 probs = torch.softmax(output, dim=1)
 pred_class = torch.argmax(probs, dim=1)
 
-# Generate Grad-CAM
-heatmap_img, heatmap_raw = compute_gradcam(
+# Generate XAI visualization (auto-selects Grad-CAM or Attention Rollout)
+from src.xai_utils import compute_xai_visualization
+heatmap_img, heatmap_raw, method = compute_xai_visualization(
     model=model,
     input_tensor=input_tensor,
-    model_name='resnet34'
+    model_name='resnet34',
+    original_size=(image.width, image.height)
 )
+print(f"Used {method} for visualization")
 ```
 
 ## 🏗️ Architecture Details
@@ -192,17 +199,30 @@ The system handles two types of datasets differently:
 
 ### Explainable AI (XAI)
 
-**Grad-CAM Implementation:**
+The system automatically selects the appropriate XAI method based on model architecture:
+
+**Grad-CAM (for CNNs):**
+- Used for: ResNet, EfficientNet models
 - Automatic target layer selection per architecture:
   - ResNet: `layer4[-1]`
   - EfficientNet: `features[-1]`
-  - ViT: Last encoder block with reshape transform
-- Handles ViT's unique token-based architecture
-- Generates heatmaps showing model attention
+- Generates gradient-based activation heatmaps
 
-**Gemini Integration:**
-- Sends original image + heatmap to Gemini AI
-- Receives forensic analysis correlating heatmap with facial features
+**Attention Rollout (for Transformers):**
+- Used for: Vision Transformer (ViT) models
+- Computes attention flow through all transformer layers
+- Visualizes which image patches the model focuses on
+- Noise filtering with configurable discard ratio (default: 0.9)
+
+**Unified Interface:**
+- `compute_xai_visualization()` automatically detects model type
+- Returns visualization, heatmap, and method name
+- Supports original image size preservation
+
+**Gemini AI Integration:**
+- Sends original image + heatmap to Gemini 2.5 Flash
+- Context-aware prompts (differentiates Grad-CAM vs Attention Rollout)
+- Receives forensic analysis correlating visualization with facial features
 - Identifies potential deepfake artifacts
 
 ## ⚙️ Configuration
@@ -253,9 +273,10 @@ Get your API key from: https://makersuite.google.com/app/apikey
 - Check the model checkpoint format (state_dict vs model_state_dict)
 - Ensure `num_classes=2` matches training
 
-**Grad-CAM errors with ViT:**
-- ViT requires `reshape_transform` - already implemented
-- Check that the target layer exists
+**XAI visualization errors:**
+- For ViT models, ensure model was initialized with `output_attentions=True`
+- Use `compute_xai_visualization()` instead of calling Grad-CAM directly on ViT
+- Attention Rollout automatically falls back to Grad-CAM if it fails
 
 **Out of memory:**
 - Reduce `BATCH_SIZE` in config
@@ -270,9 +291,10 @@ Get your API key from: https://makersuite.google.com/app/apikey
 ## 📚 Resources
 
 - [PyTorch Grad-CAM Documentation](https://github.com/jacobgil/pytorch-grad-cam)
+- [Attention Rollout Paper (Abnar & Zuidema)](https://arxiv.org/abs/2005.00928)
 - [Gemini API Guide](https://ai.google.dev/tutorials/python_quickstart)
 - [Streamlit Documentation](https://docs.streamlit.io)
-- [ViT Paper (Dosovitskiy et al.)](https://arxiv.org/abs/2010.11929)
+- [Vision Transformer Paper (Dosovitskiy et al.)](https://arxiv.org/abs/2010.11929)
 
 ## 🤝 Contributing
 

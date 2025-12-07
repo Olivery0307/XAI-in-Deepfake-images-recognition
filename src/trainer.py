@@ -55,14 +55,19 @@ def train_one_epoch(
 
         # Forward pass
         outputs = model(images)
-        loss = criterion(outputs, labels)
+        if hasattr(outputs, 'logits'):
+            logits = outputs.logits
+        else:
+            logits = outputs
+
+        loss = criterion(logits, labels)
 
         # Backward pass
         loss.backward()
         optimizer.step()
 
         # Statistics
-        _, preds = torch.max(outputs, 1)
+        _, preds = torch.max(logits, 1)
         running_loss += loss.item() * images.size(0)
         running_corrects += torch.sum(preds == labels).item()
         total_samples += images.size(0)
@@ -117,10 +122,15 @@ def validate_one_epoch(
 
             # Forward pass
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            if hasattr(outputs, 'logits'):
+                logits = outputs.logits
+            else:
+                logits = outputs
+
+            loss = criterion(logits, labels)
 
             # Statistics
-            _, preds = torch.max(outputs, 1)
+            _, preds = torch.max(logits, 1)
             running_loss += loss.item() * images.size(0)
             running_corrects += torch.sum(preds == labels).item()
             total_samples += images.size(0)

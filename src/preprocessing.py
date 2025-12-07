@@ -27,14 +27,17 @@ def get_transforms(split: str = 'train', model_type: str = 'cnn', img_size: int 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std = [0.229, 0.224, 0.225]
 
-    # Some ViT models may use different normalization
-    # For now, we default to ImageNet for compatibility
-    if model_type == 'vit':
-        # ViT models from torchvision typically use ImageNet normalization
-        # If using timm with specific pretrained weights, may need adjustment
-        mean = imagenet_mean
-        std = imagenet_std
+    # Hugging Face ViT stats (Best for google/vit-base-patch16-224)
+    # These models expect input range [-1, 1]
+    vit_mean = [0.5, 0.5, 0.5]
+    vit_std = [0.5, 0.5, 0.5]
+
+    # --- 2. Select Correct Stats ---
+    if 'vit' in model_type.lower():
+        mean = vit_mean
+        std = vit_std
     else:
+        # Default to ImageNet for CNNs (ResNet, EfficientNet)
         mean = imagenet_mean
         std = imagenet_std
 
