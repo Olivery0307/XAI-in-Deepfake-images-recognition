@@ -4,7 +4,7 @@ A production-ready deepfake detection system that combines advanced deep learnin
 
 ## 🌟 Features
 
-- **Multi-Architecture Support**: ResNet34/50, EfficientNet-B0/B4, Vision Transformer (ViT-B/16, ViT-B/32)
+- **Multi-Architecture Support**: ResNet34, EfficientNet-B4, Vision Transformer (ViT-B/16)
 - **Mixed Dataset Training**: Supports Celeb-DF, YouTube, FFHQ, StyleGAN, and Stable Diffusion datasets
 - **Smart Data Splitting**: Video-aware splitting for Celeb-DF/YouTube (prevents leakage), file-level for GAN images
 - **Explainable AI**: Grad-CAM for CNNs + Attention Rollout for ViT with automatic method selection
@@ -28,9 +28,13 @@ deepfake_project/
 │   ├── eval.py                # Model evaluation utilities
 │   └── xai_utils.py           # Grad-CAM, Attention Rollout, and Gemini API integration
 ├── notebooks/
-│   └── main_training.ipynb    # Google Colab training orchestration notebook
+│   ├── main_training.ipynb    # Google Colab training orchestration notebook
+│   └── streamlit.ipynb        # Streamlit app development notebook
 ├── app.py                     # Streamlit web application
 ├── requirements.txt           # Python dependencies
+├── final-project-msdg.ipynb   # Multi-Source Domain Generalization experiments
+├── final-project-classification.ipynb  # Classification model experiments
+├── mean-teacher.ipynb         # Mean Teacher semi-supervised learning experiments
 ├── archive/
 │   ├── EfficientNet.ipynb     # Original research notebook (legacy)
 │   ├── Resnet.ipynb          # Original research notebook (legacy)
@@ -179,11 +183,8 @@ print(f"Used {method} for visualization")
 | Model | Architecture | Input Size | Parameters | Special Notes |
 |-------|--------------|------------|------------|---------------|
 | ResNet34 | CNN | 224x224 | 21M | Fast, good baseline |
-| ResNet50 | CNN | 224x224 | 25M | Better accuracy |
-| EfficientNet-B0 | CNN | 224x224 | 5M | Efficient, mobile-ready |
-| EfficientNet-B4 | CNN | 224x224 | 19M | Higher accuracy |
+| EfficientNet-B4 | CNN | 224x224 | 19M | Higher accuracy, efficient |
 | ViT-B/16 | Transformer | 224x224 | 86M | Patch size 16, attention-based |
-| ViT-B/32 | Transformer | 224x224 | 88M | Patch size 32, faster |
 
 ### Dataset Structure
 
@@ -280,7 +281,7 @@ Get your API key from: https://makersuite.google.com/app/apikey
 
 **Out of memory:**
 - Reduce `BATCH_SIZE` in config
-- Use smaller models (ResNet34, EfficientNet-B0)
+- Use smaller models (ResNet34)
 - Enable gradient checkpointing (not yet implemented)
 
 **GCS mount fails in Colab:**
@@ -296,18 +297,12 @@ Get your API key from: https://makersuite.google.com/app/apikey
 - [Streamlit Documentation](https://docs.streamlit.io)
 - [Vision Transformer Paper (Dosovitskiy et al.)](https://arxiv.org/abs/2010.11929)
 
-## 🤝 Contributing
-
-This project was refactored from research notebooks into a production-ready codebase. Contributions welcome!
-
 ## 📄 License
 
 [Add your license here]
 
 ## 👥 Authors
 
-Oliver Squad - Initial work
-
----
-
-**Note:** This is Oliver Squad. Everyone should watch Broadway show! 🎭
+- Ching-Heng Huang
+- Chung-Yeh Yang
+- Liang-Jie Chiu
