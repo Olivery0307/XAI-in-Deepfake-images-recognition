@@ -297,10 +297,6 @@ Get your API key from: https://makersuite.google.com/app/apikey
 - [Streamlit Documentation](https://docs.streamlit.io)
 - [Vision Transformer Paper (Dosovitskiy et al.)](https://arxiv.org/abs/2010.11929)
 
-## 📄 License
-
-[Add your license here]
-
 ## 👥 Authors
 
 - Ching-Heng Huang
